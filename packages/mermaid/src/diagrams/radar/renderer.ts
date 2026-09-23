@@ -5,6 +5,17 @@ import { selectSvgElement } from '../../rendering-util/selectSvgElement.js';
 import { configureSvgSize } from '../../setupGraphViewbox.js';
 import type { RadarDB, RadarAxis, RadarCurve } from './types.js';
 
+interface Point {
+  x: number;
+  y: number;
+}
+
+interface BandPoint {
+  axis: number;
+  outer: Point;
+  inner: Point;
+}
+
 const draw: DrawDefinition = (_text, id, _version, diagram: Diagram) => {
   const db = diagram.db as RadarDB;
   const axes = db.getAxes();
@@ -20,8 +31,15 @@ const draw: DrawDefinition = (_text, id, _version, diagram: Diagram) => {
 
   // The maximum value for the radar chart is the 'max' option if it exists,
   // otherwise it is the maximum value of the curves
-  const maxValue: number =
-    options.max ?? Math.max(...curves.map((curve) => Math.max(...curve.entries)));
+  const values = curves.flatMap((curve) => curve.entries).filter((entry) => entry !== null);
+  if (
+    options.max === null &&
+    values.length === 0 &&
+    curves.some((curve) => curve.entries.includes(null))
+  ) {
+    throw new Error('Radar diagrams with only missing values require an explicit max');
+  }
+  const maxValue: number = options.max ?? Math.max(...values);
   const minValue: number = options.min;
   const radius = Math.min(config.width, config.height) / 2;
 
@@ -150,58 +168,78 @@ function drawCurves(
       // Skip curves that do not have an entry for each axis.
       return;
     }
-    // Compute points for the curve.
-    const points = curve.entries.map((entry, i) => {
+    const pointAt = (entry: number, i: number): Point => {
       const angle = (2 * Math.PI * i) / numAxes - Math.PI / 2;
       const r = relativeRadius(entry, minValue, maxValue, radius);
-      const x = r * Math.cos(angle);
-      const y = r * Math.sin(angle);
-      return { x, y };
-    });
+      return { x: r * Math.cos(angle), y: r * Math.sin(angle) };
+    };
+    const bandPoints = curve.entries.map((entry, i) =>
+      entry === null
+        ? null
+        : {
+            axis: i,
+            outer: pointAt(entry, i),
+            inner: pointAt(curve.startEntries?.[i] ?? minValue, i),
+          }
+    );
+    if (bandPoints.includes(null)) {
+      populatedRuns(bandPoints).forEach((run, runIndex) => {
+        if (graticule === 'circle') {
+          const { outerArc, innerArc, outline } = roundedRun(run, numAxes, config.curveTension);
+          drawBand(
+            g,
+            `${outerArc} L0,0 Z`,
+            `${innerArc} L0,0 Z`,
+            index,
+            `${id}-run-${runIndex}`,
+            outerArc,
+            innerArc,
+            outline
+          );
+          return;
+        }
+        const outer = run.map((point) => point.outer);
+        const inner = run.map((point) => point.inner);
+        const outerArc = polygonCurve(outer);
+        const innerArc = polygonCurve(inner);
+        const first = run[0];
+        const last = run[run.length - 1];
+        if (run.length === 1) {
+          g.append('path')
+            .attr('d', `${outerArc} L${first.inner.x},${first.inner.y}`)
+            .attr('class', `radarCurve-${index}`)
+            .style('fill', 'none');
+          return;
+        }
+        drawBand(
+          g,
+          `${outerArc} L0,0 Z`,
+          `${innerArc} L0,0 Z`,
+          index,
+          `${id}-run-${runIndex}`,
+          outerArc,
+          innerArc,
+          closedPolygonCurve([...outer, ...inner.toReversed()])
+        );
+        g.append('path')
+          .attr(
+            'd',
+            `M${last.outer.x},${last.outer.y} L${last.inner.x},${last.inner.y} M${first.inner.x},${first.inner.y} L${first.outer.x},${first.outer.y}`
+          )
+          .attr('class', `radarCurveOutline-${index}`)
+          .style('fill', 'none');
+      });
+      return;
+    }
+    const populated = bandPoints.filter((point) => point !== null);
+    const points = populated.map((point) => point.outer);
 
     if (curve.startEntries !== undefined) {
-      const startPoints = curve.startEntries.map((entry, i) => {
-        const angle = (2 * Math.PI * i) / numAxes - Math.PI / 2;
-        const r = relativeRadius(entry ?? minValue, minValue, maxValue, radius);
-        return { x: r * Math.cos(angle), y: r * Math.sin(angle) };
-      });
+      const startPoints = populated.map((point) => point.inner);
       const curvePath = graticule === 'circle' ? closedRoundCurve : closedPolygonCurve;
       const outerPath = curvePath(points, config.curveTension);
       const innerPath = curvePath(startPoints, config.curveTension);
-      const maskId = `${id}-radar-mask-${index}`;
-      const clipId = `${id}-radar-clip-${index}`;
-      const defs = g.append('defs');
-      const mask = defs.append('mask').attr('id', maskId).style('mask-type', 'luminance');
-
-      // Smoothed boundaries can cross: subtract the inner region instead of XOR-filling it.
-      mask
-        .append('path')
-        .attr('d', outerPath)
-        .style('fill', 'white')
-        .style('fill-opacity', 1)
-        .style('stroke', 'none');
-      mask
-        .append('path')
-        .attr('d', innerPath)
-        .style('fill', 'black')
-        .style('fill-opacity', 1)
-        .style('stroke', 'none');
-      defs.append('clipPath').attr('id', clipId).append('path').attr('d', outerPath);
-      g.append('path')
-        .attr('d', `${outerPath} ${innerPath}`)
-        .attr('fill-rule', 'nonzero')
-        .attr('mask', `url(#${maskId})`)
-        .attr('class', `radarCurve-${index}`)
-        .style('stroke', 'none');
-      g.append('path')
-        .attr('d', outerPath)
-        .attr('class', `radarCurveOutline-${index}`)
-        .style('fill', 'none');
-      g.append('path')
-        .attr('d', innerPath)
-        .attr('clip-path', `url(#${clipId})`)
-        .attr('class', `radarCurveOutline-${index}`)
-        .style('fill', 'none');
+      drawBand(g, outerPath, innerPath, index, id);
       return;
     }
 
@@ -219,8 +257,148 @@ function drawCurves(
   });
 }
 
-const closedPolygonCurve = (points: { x: number; y: number }[]): string =>
-  `${points.map(({ x, y }, index) => `${index === 0 ? 'M' : 'L'}${x},${y}`).join(' ')} Z`;
+function populatedRuns(points: (BandPoint | null)[]): BandPoint[][] {
+  const gap = points.indexOf(null);
+  const runs: BandPoint[][] = [];
+  let run: BandPoint[] = [];
+  // Start after a gap so the first/last chart axes belong to the same run.
+  for (let offset = 1; offset <= points.length; offset++) {
+    const point = points[(gap + offset) % points.length];
+    if (point === null) {
+      if (run.length > 0) {
+        runs.push(run);
+        run = [];
+      }
+    } else {
+      run.push(point);
+    }
+  }
+  return runs;
+}
+
+function roundedRun(run: BandPoint[], numAxes: number, tension: number) {
+  const firstAxis = run[0].axis;
+  const axes = [
+    firstAxis - 0.5,
+    ...run.map((_, index) => firstAxis + index),
+    firstAxis + run.length - 0.5,
+  ];
+  const directions = axes.map((axis) => {
+    const angle = (2 * Math.PI * axis) / numAxes - Math.PI / 2;
+    return { x: Math.cos(angle), y: Math.sin(angle) };
+  });
+  const tip = (point: BandPoint, direction: Point) => {
+    const radius =
+      (Math.hypot(point.outer.x, point.outer.y) + Math.hypot(point.inner.x, point.inner.y)) / 2;
+    return {
+      point: { x: radius * direction.x, y: radius * direction.y },
+      handle: Math.min(
+        Math.hypot(point.outer.x - point.inner.x, point.outer.y - point.inner.y) * tension,
+        radius
+      ),
+    };
+  };
+  const start = tip(run[0], directions[0]);
+  const end = tip(run[run.length - 1], directions[directions.length - 1]);
+  const cross = (a: Point, b: Point) => a.x * b.y - a.y * b.x;
+  const boundary = (side: 'outer' | 'inner') => {
+    const points = [start.point, ...run.map((point) => point[side]), end.point];
+    const tangents = points.map((point, index) => {
+      if (index === 0 || index === points.length - 1) {
+        // The two boundaries meet with opposite radial tangents at each rounded tip.
+        const sign = (side === 'outer' ? 1 : -1) * (index === 0 ? 1 : -1);
+        const handle = index === 0 ? start.handle : end.handle;
+        return {
+          x: directions[index].x * handle * sign,
+          y: directions[index].y * handle * sign,
+        };
+      }
+      const tangent = {
+        x: (points[index + 1].x - points[index - 1].x) * tension,
+        y: (points[index + 1].y - points[index - 1].y) * tension,
+      };
+      // Shorten both handles together to prevent overshoot across neighbouring rays
+      // without cutting the rendered curve or breaking tangent continuity.
+      const incoming = cross(directions[index - 1], tangent);
+      const outgoing = cross(directions[index + 1], tangent);
+      const scale = Math.min(
+        1,
+        incoming > 0 ? Math.max(0, cross(directions[index - 1], point)) / incoming : 1,
+        outgoing > 0 ? Math.max(0, cross(point, directions[index + 1])) / outgoing : 1
+      );
+      return { x: tangent.x * scale, y: tangent.y * scale };
+    });
+    return { points, tangents };
+  };
+  const outer = boundary('outer');
+  const inner = boundary('inner');
+  return {
+    outerArc: bezierCurve(outer.points, outer.tangents, false),
+    innerArc: bezierCurve(inner.points, inner.tangents, false),
+    outline: bezierCurve(
+      [...outer.points, ...inner.points.slice(1, -1).toReversed()],
+      [
+        ...outer.tangents,
+        ...inner.tangents
+          .slice(1, -1)
+          .toReversed()
+          .map(({ x, y }) => ({ x: -x, y: -y })),
+      ],
+      true
+    ),
+  };
+}
+
+function drawBand(
+  g: SVGGroup,
+  outerPath: string,
+  innerPath: string,
+  index: number,
+  id: string,
+  outerOutline = outerPath,
+  innerOutline = innerPath,
+  fillPath = `${outerPath} ${innerPath}`
+) {
+  const maskId = `${id}-radar-mask-${index}`;
+  const clipId = `${id}-radar-clip-${index}`;
+  const defs = g.append('defs');
+  const mask = defs.append('mask').attr('id', maskId).style('mask-type', 'luminance');
+
+  // Smoothed boundaries can cross: subtract the inner region instead of XOR-filling it.
+  mask
+    .append('path')
+    .attr('d', outerPath)
+    .style('fill', 'white')
+    .style('fill-opacity', 1)
+    .style('stroke', 'none');
+  mask
+    .append('path')
+    .attr('d', innerPath)
+    .style('fill', 'black')
+    .style('fill-opacity', 1)
+    .style('stroke', 'none');
+  defs.append('clipPath').attr('id', clipId).append('path').attr('d', outerPath);
+  g.append('path')
+    .attr('d', fillPath)
+    .attr('fill-rule', 'nonzero')
+    .attr('mask', `url(#${maskId})`)
+    .attr('class', `radarCurve-${index}`)
+    .style('stroke', 'none');
+  g.append('path')
+    .attr('d', outerOutline)
+    .attr('class', `radarCurveOutline-${index}`)
+    .style('fill', 'none');
+  g.append('path')
+    .attr('d', innerOutline)
+    .attr('clip-path', `url(#${clipId})`)
+    .attr('class', `radarCurveOutline-${index}`)
+    .style('fill', 'none');
+}
+
+const polygonCurve = (points: Point[]): string =>
+  points.map(({ x, y }, index) => `${index === 0 ? 'M' : 'L'}${x},${y}`).join(' ');
+
+const closedPolygonCurve = (points: Point[]): string => `${polygonCurve(points)} Z`;
 
 export function relativeRadius(
   value: number,
@@ -228,32 +406,39 @@ export function relativeRadius(
   maxValue: number,
   radius: number
 ): number {
+  if (maxValue === minValue) {
+    return 0;
+  }
   const clippedValue = Math.min(Math.max(value, minValue), maxValue);
   return (radius * (clippedValue - minValue)) / (maxValue - minValue);
 }
 
-export function closedRoundCurve(points: { x: number; y: number }[], tension: number): string {
-  // Catmull-Rom spline helper function
+export function closedRoundCurve(points: Point[], tension: number): string {
+  const tangents = points.map((_, index) => {
+    const previous = points[(index - 1 + points.length) % points.length];
+    const next = points[(index + 1) % points.length];
+    return { x: (next.x - previous.x) * tension, y: (next.y - previous.y) * tension };
+  });
+  return bezierCurve(points, tangents, true);
+}
+
+function bezierCurve(points: Point[], tangents: Point[], closed: boolean): string {
   const numPoints = points.length;
   let d = `M${points[0].x},${points[0].y}`;
-  // For each segment from point i to point (i+1) mod n, compute control points.
-  for (let i = 0; i < numPoints; i++) {
-    const p0 = points[(i - 1 + numPoints) % numPoints];
+  for (let i = 0; i < (closed ? numPoints : numPoints - 1); i++) {
     const p1 = points[i];
     const p2 = points[(i + 1) % numPoints];
-    const p3 = points[(i + 2) % numPoints];
-    // Calculate the control points for the cubic Bezier segment
     const cp1 = {
-      x: p1.x + (p2.x - p0.x) * tension,
-      y: p1.y + (p2.y - p0.y) * tension,
+      x: p1.x + tangents[i].x,
+      y: p1.y + tangents[i].y,
     };
     const cp2 = {
-      x: p2.x - (p3.x - p1.x) * tension,
-      y: p2.y - (p3.y - p1.y) * tension,
+      x: p2.x - tangents[(i + 1) % numPoints].x,
+      y: p2.y - tangents[(i + 1) % numPoints].y,
     };
     d += ` C${cp1.x},${cp1.y} ${cp2.x},${cp2.y} ${p2.x},${p2.y}`;
   }
-  return `${d} Z`;
+  return closed ? `${d} Z` : d;
 }
 
 function drawLegend(

@@ -226,6 +226,32 @@ describe('radar', () => {
       expect(entry.axis?.$refText).toBe(axis);
     });
 
+    it.each(['2, null, [3..5]', 'A: 2, B: null, C: [3..5]'])(
+      'should distinguish missing entries from literals and ranges: %s',
+      (entries) => {
+        const result = parse(`radar-beta\naxis A,B,C\ncurve c1{${entries}}`);
+        expectNoErrorsOrAlternatives(result);
+        expect(result.value.curves[0].entries.map(({ missing }) => !!missing)).toEqual([
+          false,
+          true,
+          false,
+        ]);
+        expect(result.value.curves[0].entries[1].value).toBeUndefined();
+        expect(result.value.curves[0].entries[1].range).toBeUndefined();
+      }
+    );
+
+    it.each(['null: 2, B: 3', 'null 2, B 3', '2, 3'])(
+      'should preserve null as an existing axis and curve identifier: %s',
+      (entries) => {
+        const result = parse(`radar-beta\naxis null,B\ncurve null{${entries}}`);
+        expectNoErrorsOrAlternatives(result);
+        expect(result.value.axes[0].name).toBe('null');
+        expect(result.value.curves[0].name).toBe('null');
+        expect(result.value.curves[0].entries.map(({ value }) => value)).toEqual([2, 3]);
+      }
+    );
+
     it.each(['[0..0]', '[4..4]', '[1.25..2.5]'])(
       'should preserve zero-width and decimal ranges: %s',
       (range) => {

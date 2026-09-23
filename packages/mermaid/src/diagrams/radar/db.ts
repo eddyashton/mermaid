@@ -92,6 +92,9 @@ const computeCurveEntries = (entries: Entry[]): Pick<RadarCurve, 'entries' | 'st
   })();
 
   const parsedEntries = orderedEntries.map((entry) => {
+    if (entry.missing) {
+      return { start: null, end: null };
+    }
     if (entry.range !== undefined) {
       const [start, end] = entry.range.slice(1, -1).split('..').map(Number);
       if (start > end) {
@@ -100,7 +103,7 @@ const computeCurveEntries = (entries: Entry[]): Pick<RadarCurve, 'entries' | 'st
       return { start, end };
     }
     if (entry.value === undefined) {
-      throw new Error('Curve entry must contain a value or range');
+      throw new Error('Curve entry must contain a value, range, or null');
     }
     return { start: null, end: entry.value };
   });

@@ -126,6 +126,33 @@ a zero-width interval at that axis, not a missing value. With circular graticule
 boundaries are smoothed independently; the band fills the upper boundary's interior excluding
 the lower boundary's interior.
 
+### Missing values (experimental)
+
+Use `null` to leave an axis unpopulated for a particular curve. This is distinct from `0`
+(a value at zero) or `[4..4]` (a known zero-width interval). Named entries must still list
+every axis explicitly.
+
+```mermaid-example
+radar-beta
+  title Missing values
+  axis A, B, C, D, E, F, G, H
+  curve c1{[4..8], [4..8], null, [4..8], [4..8], null, [4..8], [4..8]}
+  min 0
+  max 10
+```
+
+Adjacent populated axes form separate lobes. With circular graticules, each lobe continues
+smoothly through its end axes and closes halfway toward each neighbouring missing axis.
+The two boundaries meet at the midpoint of the end axis's interval, at that halfway angle.
+These rounded ends are inferred, not additional observations; the specified values on each
+populated axis are preserved. No curve is drawn through missing axes.
+
+Populated axes at the end and beginning of the axis list are adjacent. Scalar values and ranges
+can be mixed with `null`. An isolated interval forms a rounded lobe on circular graticules.
+Polygon graticules retain straight end caps and draw isolated intervals as radial lines.
+An all-missing curve has no shape but retains its legend entry. Missing values are ignored when calculating
+the automatic maximum. If the entire diagram has no observed values, specify `max` explicitly.
+
 ### Options
 
 - `showLegend`: The showLegend keyword is used to show or hide the legend in the radar diagram. The legend is shown by default.

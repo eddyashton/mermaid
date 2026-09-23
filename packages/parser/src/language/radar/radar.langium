@@ -19,11 +19,15 @@ fragment Label:
 ;
 
 Axis:
-    name=ID (Label)? 
+    name=RadarID (Label)?
 ;
 
 Curve:
-    name=ID (Label)? '{' Entries '}'
+    name=RadarID (Label)? '{' Entries '}'
+;
+
+RadarID returns string:
+    ID | 'null'
 ;
 
 fragment Entries:
@@ -35,12 +39,13 @@ interface Entry {
     axis?: @Axis;
     range?: string;
     value?: number;
+    missing?: boolean;
 }
 DetailedEntry returns Entry:
-    axis=[Axis:ID] ':'? (range=RANGE | value=NUMBER)
+    axis=[Axis:RadarID] ':'? (range=RANGE | value=NUMBER | missing?='null')
 ;
 NumberEntry returns Entry:
-    (range=RANGE | value=NUMBER)
+    (range=RANGE | value=NUMBER | missing?='null')
 ;
 
 Option:
